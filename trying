@@ -1,0 +1,72 @@
+from future.moves import tkinter as tk
+from future.moves.tkinter import messagebox
+
+
+# from transformers import pipeline, RobertaTokenizer, RobertaForMaskedLM
+
+class CustomGUI:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.geometry("500x500")
+        self.root.configure(bg='light blue')
+
+
+
+        self.enter_text_button = tk.Button(self.root, text="Enter Text", command=self.enter_text,
+                                           bg='dark blue', bd=4,relief=tk.RAISED)
+
+        self.enter_text_button.grid(row=0, column=0, padx=10, pady=10, rowspan=2)
+
+        self.summary_button = tk.Button(self.root, text="Summary", command=self.summarize_text,
+                                           bg='dark blue', bd=4,relief=tk.RAISED)
+
+        self.summary_button.grid(row=2, column=0, padx=10, pady=10, rowspan=2)
+
+        self.refresh_button = tk.Button(self.root, text="Refresh", command=self.refresh,
+                                           bg='dark blue', bd=4, relief=tk.RAISED)
+
+        self.refresh_button.grid(row=4, column=0, padx=10, pady=10)
+
+        self.exit_button = tk.Button(self.root, text="Exit", command=self.root.quit,
+                                    bg='dark blue', bd=4, relief=tk.RAISED)
+        self.exit_button.grid(row=6, column=0, padx=10, pady=10)
+
+        self.text_entry = None
+        self.summary_label = None
+
+        # self.tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+        # self.model = RobertaForMaskedLM.from_pretrained("roberta-base")
+        # self.summarizer = pipeline("summarization")
+
+    def enter_text(self):
+        if self.text_entry is not None:
+            self.text_entry.destroy()
+        self.text_entry = tk.Text(self.root, height=10, width=30)
+        self.text_entry.grid(row=0, column=2, padx=10, pady=10, rowspan=4)
+
+    def summarize_text(self):
+        if self.text_entry is None:
+            messagebox.showerror("Error", "Please enter text first.")
+            return
+        text = self.text_entry.get("1.0", tk.END)
+        summary = self.summarizer(text)
+        if self.summary_label is not None:
+            self.summary_label.destroy()
+        self.summary_label = tk.Label(self.root, text=summary[0]['summary_text'])
+        self.summary_label.grid(row=4, column=0, columnspan=3, padx=10, pady=10)
+
+    def refresh(self):
+        if self.text_entry is not None:
+            self.text_entry.destroy()
+            self.text_entry = None
+        if self.summary_label is not None:
+            self.summary_label.destroy()
+            self.summary_label = None
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    app = CustomGUI()
+    app.run()
