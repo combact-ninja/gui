@@ -1,72 +1,83 @@
-from future.moves import tkinter as tk
-from future.moves.tkinter import messagebox
-
-
+import tkinter as tk
+from tkinter import messagebox
 # from transformers import pipeline, RobertaTokenizer, RobertaForMaskedLM
 
 class CustomGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.geometry("500x500")
-        self.root.configure(bg='light blue')
+        self.root.title('Sentence Simplification')
+        self.root.geometry("600x600")
 
 
 
-        self.enter_text_button = tk.Button(self.root, text="Enter Text", command=self.enter_text,
-                                           bg='dark blue', bd=4,relief=tk.RAISED)
+        self.root.configure(bg='black')
 
-        self.enter_text_button.grid(row=0, column=0, padx=10, pady=10, rowspan=2)
+        self.input_text_frame = tk.Frame(self.root, width=200, height=300, bg='black')
+        self.input_text_frame.pack_propagate(False)
 
-        self.summary_button = tk.Button(self.root, text="Summary", command=self.summarize_text,
-                                           bg='dark blue', bd=4,relief=tk.RAISED)
+        self.input_text_label = tk.Label(self.input_text_frame, text="Input", font=('Arial', 14, 'bold'), fg='white',
+                                         bg='black')
+        self.input_text_label.pack(padx=10, pady=5)
 
-        self.summary_button.grid(row=2, column=0, padx=10, pady=10, rowspan=2)
+        self.text_entry = tk.Text(self.input_text_frame, height=10, width=30, bg='black', fg='white')
+        self.text_entry.pack(padx=10, pady=5)
 
-        self.refresh_button = tk.Button(self.root, text="Refresh", command=self.refresh,
-                                           bg='dark blue', bd=4, relief=tk.RAISED)
+        self.summary_frame = tk.Frame(self.root, width=200, height=300, bg='black')
+        self.summary_frame.pack_propagate(False)
 
-        self.refresh_button.grid(row=4, column=0, padx=10, pady=10)
+        self.summary_label = tk.Label(self.summary_frame, text="Summary", font=('Arial', 14, 'bold'), fg='white',
+                                      bg='black')
+        self.summary_label.pack(padx=10, pady=5)
 
-        self.exit_button = tk.Button(self.root, text="Exit", command=self.root.quit,
-                                    bg='dark blue', bd=4, relief=tk.RAISED)
-        self.exit_button.grid(row=6, column=0, padx=10, pady=10)
+        self.summary_output = tk.Text(self.summary_frame, height=10, width=30, bg='black', fg='white')
+        self.summary_output.pack(padx=10, pady=5)
 
-        self.text_entry = None
-        self.summary_label = None
+        self.enter_text_button = tk.Button(self.root, text="Input Text", command=self.show_input_box, bg='black',
+                                           fg='white', font=('Arial', 10, 'bold'))
+        self.enter_text_button.pack(pady=10)
+
+        self.summary_button = tk.Button(self.root, text="Summary", command=self.show_summary_box, bg='black',
+                                        fg='white', font=('Arial', 10, 'bold'))
+        self.summary_button.pack(pady=10)
+
+        self.refresh_button = tk.Button(self.root, text="Refresh", command=self.refresh, bg='black', fg='white',
+                                        font=('Arial', 10, 'bold'))
+        self.refresh_button.pack(pady=10)
+
+        self.exit_button = tk.Button(self.root, text="Exit", command=self.root.quit, bg='black', fg='white',
+                                     font=('Arial', 10, 'bold'))
+        self.exit_button.pack(pady=10)
 
         # self.tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         # self.model = RobertaForMaskedLM.from_pretrained("roberta-base")
         # self.summarizer = pipeline("summarization")
 
-    def enter_text(self):
-        if self.text_entry is not None:
-            self.text_entry.destroy()
-        self.text_entry = tk.Text(self.root, height=10, width=30)
-        self.text_entry.grid(row=0, column=2, padx=10, pady=10, rowspan=4)
 
-    def summarize_text(self):
+        self.input_text_frame.pack_forget()
+        self.summary_frame.pack_forget()
+
+
+
+    def show_input_box(self):
+        self.input_text_frame.pack(pady=10, padx=50, side=tk.LEFT)
+
+    def show_summary_box(self):
+        self.summary_frame.pack(pady=10, padx=50, side=tk.RIGHT)
+
         if self.text_entry is None:
             messagebox.showerror("Error", "Please enter text first.")
             return
         text = self.text_entry.get("1.0", tk.END)
         summary = self.summarizer(text)
-        if self.summary_label is not None:
-            self.summary_label.destroy()
-        self.summary_label = tk.Label(self.root, text=summary[0]['summary_text'])
-        self.summary_label.grid(row=4, column=0, columnspan=3, padx=10, pady=10)
-
+        self.summary_output.delete("1.0", tk.END)
+        self.summary_output.insert(tk.END, summary[0]['summary_text'])
     def refresh(self):
-        if self.text_entry is not None:
-            self.text_entry.destroy()
-            self.text_entry = None
-        if self.summary_label is not None:
-            self.summary_label.destroy()
-            self.summary_label = None
+        self.text_entry.delete("1.0", tk.END)
+        self.summary_output.delete("1.0", tk.END)
 
     def run(self):
         self.root.mainloop()
 
 
-if __name__ == "__main__":
-    app = CustomGUI()
-    app.run()
+gui = CustomGUI()
+gui.run()
