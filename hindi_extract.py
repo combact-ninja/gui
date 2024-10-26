@@ -50,3 +50,7 @@ def Pixel_based_OCR(file):
         cleaned_strings = [s.replace('-', ' ') for s in word_list]
 
     return cleaned_strings
+
+
+# useful links -- https://github.com/tesseract-ocr/tessdata/blob/main/hin.traineddata
+# https://codetoprosper.com/tesseract-ocr-for-windows/
