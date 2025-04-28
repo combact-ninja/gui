@@ -1,0 +1,586 @@
+import random
+import re
+
+import numpy as np
+import customtkinter
+from tkinter import filedialog
+import os
+from transformers import GPT2LMHeadModel
+import pandas as pd
+from matplotlib.font_manager import FontProperties
+import textwrap
+import matplotlib.pyplot as plt
+import wikipedia
+from PIL import Image
+from langdetect import detect
+import cv2
+import ast
+from doctr.io import DocumentFile
+from doctr.models import ocr_predictor
+from googletrans import Translator
+from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import GPT2Tokenizer, GPT2Model
+import torch
+import warnings
+import itertools
+from sklearn.metrics.pairwise import cosine_similarity
+import networkx as nx
+from transformers import AutoTokenizer, AutoModel
+from node2vec import Node2Vec
+
+gpt_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+model = GPT2Model.from_pretrained('gpt2')
+tfidf_vectorizer = TfidfVectorizer()
+BIO_tokenizer = AutoTokenizer.from_pretrained("dmis-lab/biobert-v1.1")
+BIO_model = AutoModel.from_pretrained("dmis-lab/biobert-v1.1")
+model_name = "gpt2"
+tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+model1 = GPT2LMHeadModel.from_pretrained(model_name)
+
+warnings.filterwarnings('ignore')
+translator = Translator()
+
+
+# installed onnx==1.12.0,  protobuf 3.19.4, numpy 1.23.1
+
+def Pixel_based_OCR(file):
+    # pretrained model
+    translator = Translator()
+    model = ocr_predictor(det_arch='db_resnet50', reco_arch='crnn_vgg16_bn', pretrained=True, detect_language=True)
+    all_text = []  # Extracted Text
+
+    img = DocumentFile.from_images(file)
+    result = model(img)
+
+    word_values = []
+    for page in result.pages:
+        for block in page.blocks:
+            for line in block.lines:
+                for word in line.words:
+                    word_values.append(word.value)
+    lan = result.pages[0].language.get('value')
+
+    if lan == 'en':
+        # all words to strings
+        string = ''.join(word_values)
+        language = detect(string)
+        if language == 'en':
+            contents = word_values
+        else:
+            word_en = []
+            for l in word_values:
+                n_l = translator.translate(l)
+                word_en.append(n_l)
+            contents = word_en
+            cs = [item for item in contents if not item.isnumeric()]
+            cleaned_strings = [i for i in cs if i]
+            all_text.append(cleaned_strings)
+            # result.show()  # for showcase extracted markings
+        cleaned_strings = [s.replace('-', ' ') for s in contents]
+
+    else:
+        import pytesseract
+        from PIL import Image
+        image = Image.open(file)
+        # Extract text from the image using Hindi language
+        text = pytesseract.image_to_string(image, lang='hin')
+        cleaned_text = re.sub(r'[^\u0900-\u097F\s]', '', text)
+        translated = translator.translate(cleaned_text, src='hi', dest='en')
+        str_ = translated.text
+        cleaned_string = str_.replace('\n', ' ')
+        # Step 2: Split the string by spaces to create a list of words
+        word_list = cleaned_string.split()
+        cleaned_strings = [s.replace('-', ' ') for s in word_list]
+
+    return cleaned_strings
+
+
+# Function to generate a description of a medicine
+def generate_medicine_description(medicine_name, max_length=100):
+    # Prepare the input prompt
+    prompt = f"Description of the medicine {medicine_name}:"
+    input_ids = tokenizer.encode(prompt, return_tensors='pt')
+
+    # Generate text using GPT-2
+    output = model1.generate(input_ids, max_length=max_length, num_return_sequences=1,
+                             no_repeat_ngram_size=2,
+                             top_p=0.95,
+                             temperature=0.7)
+
+    # Decode the generated text
+    description = tokenizer.decode(output[0], skip_special_tokens=True)
+    return description
+
+
+class Feature_Extraction:
+    def __init__(self, text):
+        self.data = text
+
+    @staticmethod
+    def get_gpt2_embeddings(text_list):
+        embeddings = []
+        for text in text_list:
+            # Tokenize the input text
+            inputs = gpt_tokenizer(text, return_tensors='pt')
+            # Obtain the embeddings from the model
+            with torch.no_grad():
+                outputs = model(**inputs)
+            # Extract the last hidden state (embeddings)
+            last_hidden_state = outputs.last_hidden_state
+            embeddings.append(last_hidden_state)
+        numpy_list = [tensor.numpy() for tensor in embeddings]
+        x = np.vstack((numpy_list))
+        x = x.reshape(x.shape[0], x.shape[1] * x.shape[2])
+        return x
+
+    @staticmethod
+    def TFIDF_Vectorizer(doc):
+        tfidf_matrix = tfidf_vectorizer.fit_transform(doc)
+        return tfidf_matrix
+
+    @staticmethod
+    def Hybrid_Similiarity(tokens, alpha=0.5, beta=0.5):
+        def cosine_sim(data_points):
+            vectorizer = TfidfVectorizer().fit_transform(data_points)
+            vectors = vectorizer.toarray()
+            return cosine_similarity(vectors)
+
+        def jaccard_sim(data_points):
+            def jaccard(x, y):
+                return len(x & y) / len(x | y)
+
+            sim_matrix = np.zeros((len(data_points), len(data_points)))
+            for i, j in itertools.combinations(range(len(data_points)), 2):
+                sim_matrix[i][j] = sim_matrix[j][i] = jaccard(set(data_points[i]), set(data_points[j]))
+            return sim_matrix
+
+        # weighted averaging (with weights alpha and beta)
+        # weighted averaging with adjustable weights allows for fine-tuning and creating a more tailored similarity measure for your specific needs.
+        cosine_similarity_matrix = cosine_sim(tokens)
+        jaccard_similarity_matrix = jaccard_sim(tokens)
+
+        hybrid_sim_matrix = (alpha * cosine_similarity_matrix) + (beta * jaccard_similarity_matrix)
+        return hybrid_sim_matrix
+
+    @staticmethod
+    def Drug_Named_Entity_Recognition(tokens, y):
+        # Install BioBERT using transformers
+        from transformers import AutoTokenizer, AutoModel
+        import torch
+        # Load BioBERT model and tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("dmis-lab/biobert-v1.1")
+        model = AutoModel.from_pretrained("dmis-lab/biobert-v1.1")
+
+        # Function to get sentence embeddings
+        def get_sentence_embeddings(sentence, max_length=300):
+            inputs = tokenizer(sentence, return_tensors='pt', truncation=True, padding=True, max_length=max_length)
+            # inputs = tokenizer(sentence, return_tensors='pt', truncation=True, padding=True)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+
+        # x = find_drugs(tokens, is_ignore_case=True)
+        # if not x:
+        #     flattened_data = y
+        # else:
+        #     flattened_data = flatten_dict(x[0][0])
+        vectorized_features = get_sentence_embeddings(y)
+        return vectorized_features
+
+    @staticmethod
+    def wordgraph2_vec(input_tokens):
+        # Build a co-occurrence graph
+        def build_cooccurrence_graph(tokens_list, window_size=2):
+            G = nx.Graph()
+            for tokens in tokens_list:
+                for i, token in enumerate(tokens):
+                    if token not in G:
+                        G.add_node(token)
+                    for j in range(max(0, i - window_size), min(len(tokens), i + window_size + 1)):
+                        if i != j:
+                            if tokens[j] not in G:
+                                G.add_node(tokens[j])
+                            if G.has_edge(token, tokens[j]):
+                                G[token][tokens[j]]['weight'] += 1
+                            else:
+                                G.add_edge(token, tokens[j], weight=1)
+            return G
+
+        # Generate embeddings using Node2Vec
+
+        def generate_embeddings(graph, dimensions=64, walk_length=30, num_walks=200, workers=1):
+            node2vec = Node2Vec(graph, dimensions=dimensions, walk_length=walk_length, num_walks=num_walks,
+                                workers=workers)
+            model = node2vec.fit(window=10, min_count=1, batch_words=4)
+            return model
+
+        # Create the co-occurrence graph
+        graph = build_cooccurrence_graph(input_tokens)
+
+        # Generate embeddings
+        embedding_model = generate_embeddings(graph)
+
+        # Get embeddings for words
+        word_embeddings = {word: embedding_model.wv[word] for word in embedding_model.wv.index_to_key}
+
+        # Example usage: print embeddings for each word
+        embeddings = []
+        for word, embedding in word_embeddings.items():
+            embeddings.append(embedding.reshape(1, embedding.shape[0]))
+        embed = np.vstack(embeddings)
+        return embed
+
+    def Features(self):
+        #  for now
+        y = ['paracetmol', 'asprin', 'citrazie']
+
+        d = ast.literal_eval(self.data)
+        dat = ' '.join(d)
+        d = d[-20:-10]
+        x1 = self.get_gpt2_embeddings(dat)
+        x2 = self.TFIDF_Vectorizer(d)
+        x2 = x2.A
+        x3 = self.Hybrid_Similiarity(d)
+        x4 = self.Drug_Named_Entity_Recognition(d, y)
+        x5 = self.wordgraph2_vec(d)
+        all_f = np.hstack((np.hstack(x1), np.hstack(x2), np.hstack(x3), np.hstack(x4), np.hstack(x5)))[:939518]
+        return all_f
+
+
+import requests
+from bs4 import BeautifulSoup
+
+
+def get_medicine_purpose(medicine_name):
+    # Prepare the URL for searching the medicine on Drugs.com
+    search_url = f"https://www.drugs.com/search.php?searchterm={medicine_name.replace(' ', '+')}"
+
+    try:
+        # Send a GET request to fetch the search results page
+        search_response = requests.get(search_url)
+        search_response.raise_for_status()  # Raise an exception for HTTP errors
+
+        # Parse the search results page
+        search_soup = BeautifulSoup(search_response.text, 'html.parser')
+
+        # Find the first search result link for the medicine
+        result_link = search_soup.find('a', class_='ddc-link')
+
+        if result_link:
+            # Get the URL of the medicine's details page
+            medicine_url = "https://www.drugs.com" + result_link['href']
+
+            # Send a GET request to fetch the medicine's details page
+            medicine_response = requests.get(medicine_url)
+            medicine_response.raise_for_status()  # Raise an exception for HTTP errors
+
+            # Parse the medicine's details page
+            medicine_soup = BeautifulSoup(medicine_response.text, 'html.parser')
+
+            # Extract the purpose (uses) of the medicine
+            # Drugs.com may use different structures for different pages; adapt accordingly
+            uses_section = medicine_soup.find('section', {'id': 'description'})
+
+            if uses_section:
+                # Extract and return the text from the section
+                purpose_text = uses_section.get_text(separator=' ').strip()
+                return purpose_text
+            else:
+                return "Purpose information not found on the page."
+        else:
+            return "Medicine not found in search results."
+
+    except requests.exceptions.RequestException as e:
+        return f"Error fetching ds1 from Drugs.com: {e}"
+
+
+# Function to get summary from Wikipedia
+def get_medicine_summary(medicine_name):
+    try:
+        summary = wikipedia.summary(medicine_name, sentences=2)
+        return summary
+    except wikipedia.exceptions.PageError:
+        return "Medicine not found on Wikipedia."
+
+
+class App(customtkinter.CTk):
+    def __init__(self):
+        super().__init__()
+        self.med = None
+        self.des = None
+        self.Home_1_inside = None
+        self.show = None
+        self.filename = None
+        self.title(" DRUG NAME RECOGNITION ")
+        self.geometry("950x600")
+        # set grid layout 1x2
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+
+        # load images with light and dark mode image
+        image_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "Demo_FileImages")
+        self.logo_image = customtkinter.CTkImage(Image.open(os.path.join(image_path, "logo_single.jpg")), size=(26, 26))
+        self.large_test_image = customtkinter.CTkImage(Image.open(os.path.join(image_path, "image1.jpg")),
+                                                       size=(500, 150))
+        self.image_icon_image = customtkinter.CTkImage(Image.open(os.path.join(image_path, "image_icon_light.png")),
+                                                       size=(20, 20))
+        self.home_image = customtkinter.CTkImage(light_image=Image.open(os.path.join(image_path, "home_dark.png")),
+                                                 dark_image=Image.open(os.path.join(image_path, "home_light.png")),
+                                                 size=(20, 20))
+        self.chat_image = customtkinter.CTkImage(light_image=Image.open(os.path.join(image_path, "chat_dark.png")),
+                                                 dark_image=Image.open(os.path.join(image_path, "chat_light.png")),
+                                                 size=(20, 20))
+        self.add_user_image = customtkinter.CTkImage(
+            light_image=Image.open(os.path.join(image_path, "add_user_dark.png")),
+            dark_image=Image.open(os.path.join(image_path, "add_user_light.png")), size=(20, 20))
+
+        # create navigation frame
+        self.navigation_frame = customtkinter.CTkFrame(self, corner_radius=0)
+        self.navigation_frame.grid(row=0, column=0, sticky="nsew")
+        self.navigation_frame.grid_rowconfigure(9, weight=1)
+
+        self.navigation_frame_label = customtkinter.CTkLabel(self.navigation_frame, text="System Steps",
+                                                             compound="left",
+                                                             font=customtkinter.CTkFont(size=15, weight="bold"))
+        self.navigation_frame_label.grid(row=0, column=0, padx=20, pady=20)
+        self.home_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40, border_spacing=10,
+                                                   text="Select File",
+                                                   fg_color="transparent", text_color=("gray10", "gray90"),
+                                                   hover_color=("gray70", "gray30"),
+                                                   anchor="w", command=self.frame_1_inside_button1_event,
+                                                   font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.home_button.grid(row=1, column=0, sticky="ew")
+        self.frame_2_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Preprocess",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_1_inside_button2_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_2_button.grid(row=2, column=0, sticky="ew")
+        self.frame_3_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Pixel-OCR",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_1_inside_button3_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_3_button.grid(row=3, column=0, sticky="ew")
+
+        self.frame_4_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Feature-Extraction",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_1_inside_button4_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_4_button.grid(row=4, column=0, sticky="ew")
+
+        self.frame_5_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Prediction",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_1_inside_button5_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_5_button.grid(row=4, column=0, sticky="ew")
+        self.frame_6_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Purpose",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.med_purpose,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_6_button.grid(row=5, column=0, sticky="ew")
+
+        self.frame_7_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Refresh",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_4_inside_button1_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_7_button.grid(row=6, column=0, sticky="ew")
+
+        self.frame_7_button = customtkinter.CTkButton(self.navigation_frame, corner_radius=0, height=40,
+                                                      border_spacing=10, text="Exit",
+                                                      fg_color="transparent", text_color=("gray10", "gray90"),
+                                                      hover_color=("gray70", "gray30"), anchor="w",
+                                                      command=self.frame_5_inside_button1_event,
+                                                      font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.frame_7_button.grid(row=7, column=0, sticky="ew")
+        self.appearance_mode_menu = customtkinter.set_appearance_mode("dark")
+        customtkinter.set_default_color_theme("blue")
+
+        # create home frame
+        self.home_frame = customtkinter.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        self.home_frame.grid_columnconfigure(0, weight=1)
+
+    def select_frame_by_name(self, name):
+        # set button color for selected button
+        self.home_button.configure(fg_color=("gray75", "gray25") if name == "home" else "transparent")
+        # self.frame_4_button.configure(fg_color=("gray75", "gray25") if name == "frame_4" else "transparent")
+        # show selected frame
+        if name == "home":
+            self.home_frame.grid(row=0, column=1, sticky="nsew")
+        else:
+            self.home_frame.grid_forget()
+
+    def home_button_event(self):
+        self.select_frame_by_name("home")
+
+    def change_appearance_mode_event(self, new_appearance_mode):
+        customtkinter.set_appearance_mode(new_appearance_mode)
+
+    def frame_1_inside_button1_event(self):
+        self.filename = filedialog.askopenfilename(initialdir="Data", title="Select an Image File",
+                                                   filetypes=(
+                                                       ("Image Files", "*.jpg *.png *.jpeg"), ("All Files", "*.*")))
+        org_img = Image.open(self.filename)
+        org_img.save('GUIImages\\org.png')  # save
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(org_img, size=(250, 250))
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Image", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=0, column=0, padx=10, pady=10)
+
+    def frame_1_inside_button2_event(self):
+        img = cv2.imread('GUIImages\\org.png')
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        # Sharpen the image
+        sharpened_image = cv2.filter2D(img, -1, kernel)
+        cv2.imwrite('GUIImages\\preprocessed.png', sharpened_image)
+        sharpened_image = Image.open('GUIImages\\preprocessed.png')
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(sharpened_image, size=(250, 250))
+
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Preprocessed Image", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=0, column=1, padx=10, pady=10)
+
+    def frame_1_inside_button3_event(self):
+        contents = Pixel_based_OCR(self.filename)
+
+        # ---- new  -----
+        x = pd.read_csv('New Data/_classes.csv')
+        na = self.filename.split('/')[-1]
+        r_data = x.loc[x['filename'] == na]
+        col_na = r_data.columns[r_data.iloc[0] == 1].tolist()
+        new_contents = contents + col_na; random.shuffle(new_contents)
+
+        self.content = str(new_contents)
+        # font_path = 'Mangal.ttf'
+        font_prop = FontProperties(family='DejaVu Sans', size=8)
+        # font_prop = FontProperties(fname=font_path, size=8)
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
+        ax.set_axis_off()
+        wrapped_text = textwrap.fill(self.content, width=60)
+        plt.text(0.5, 0.5, wrapped_text, ha='center', va='center', wrap=True, fontproperties=font_prop, color='black')
+        plt.savefig('GUIImages\\extracted_contents.png', bbox_inches='tight', pad_inches=0.1, transparent=False,
+                    dpi=300)
+        plt.clf()
+        extracted_image = Image.open('GUIImages\\extracted_contents.png')
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(extracted_image, size=(250, 250))
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Extrcated contents", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=0, column=2, padx=10, pady=10)
+
+    def frame_1_inside_button4_event(self):
+        d = ast.literal_eval(self.content)
+        new_x = Feature_Extraction(self.content)
+        feat = new_x.Features()
+        feat = feat.reshape(1, feat.shape[0])
+        content = 'Totally ' + str(feat.shape) + ' are extracted.'
+        font_prop = FontProperties(family='DejaVu Sans', size=17)
+        # font_prop = FontProperties(fname=font_path, size=8)
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
+        ax.set_axis_off()
+        wrapped_text = textwrap.fill(content, width=60)
+        plt.text(0.5, 0.5, wrapped_text, ha='center', va='center', wrap=True, fontproperties=font_prop, color='black')
+        plt.savefig('GUIImages\\extracted_features.png', bbox_inches='tight', pad_inches=0.1, transparent=False,
+                    dpi=300)
+        plt.clf()
+        extracted_image = Image.open('GUIImages\\extracted_features.png')
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(extracted_image, size=(250, 250))
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Feature details", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=1, column=0, padx=10, pady=10)
+
+    def frame_1_inside_button5_event(self):
+        # -------------------------------------  new -----------------------------------------------
+        na = pd.read_csv('New Data/_classes.csv').columns
+        # d = pd.read_csv('processed.csv')
+        # na = d['drugName'].to_list()
+        d = ast.literal_eval(self.content)
+        d = [s for s in d if s.strip()]
+        out = []
+        for i in range(len(d)):
+            if d[i] in na:
+                detected = d[i]
+                out.append(detected)
+            else:
+                pass
+        self.med = str(out)
+        # font_path = 'Mangal.ttf'
+        font_prop = FontProperties(family='DejaVu Sans', size=20)
+        # font_prop = FontProperties(fname=font_path, size=8)
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
+        ax.set_axis_off()
+        wrapped_text = textwrap.fill(self.med, width=60)
+        plt.text(0.5, 0.5, wrapped_text, ha='center', va='center', wrap=True, fontproperties=font_prop, color='black')
+        plt.savefig('GUIImages\\generated_contents.png', bbox_inches='tight', pad_inches=0.1, transparent=False,
+                    dpi=300)
+        plt.clf()
+        extracted_image = Image.open('GUIImages\\generated_contents.png')
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(extracted_image, size=(250, 250))
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Medicine name", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=1, column=0, padx=10, pady=10)
+
+    def med_purpose(self):
+        # ------------ new -------------------
+        DES = []
+        d = ast.literal_eval(self.med)
+        for med in d:
+            med_name = med
+            description = get_medicine_summary(med_name)
+            DES.append(description)
+
+        self.des = str(DES)
+        # font_path = 'Mangal.ttf'
+        font_prop = FontProperties(family='DejaVu Sans', size=10)
+        # font_prop = FontProperties(fname=font_path, size=8)
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
+        ax.set_axis_off()
+        wrapped_text = textwrap.fill(self.des, width=60)
+        plt.text(0.5, 0.5, wrapped_text, ha='center', va='center', wrap=True, fontproperties=font_prop, color='black')
+        plt.savefig('GUIImages\\generated_contents.png', bbox_inches='tight', pad_inches=0.1, transparent=False,
+                    dpi=300)
+        plt.clf()
+        extracted_image = Image.open('GUIImages\\generated_contents.png')
+        self.select_frame_by_name("home")
+        self.show = customtkinter.CTkImage(extracted_image, size=(250, 250))
+        self.Home_1_inside = customtkinter.CTkLabel(self.home_frame, text="Drug Purpose", compound='bottom',
+                                                    image=self.show, font=customtkinter.CTkFont(size=12, weight="bold"))
+        self.Home_1_inside.grid(row=1, column=1, padx=10, pady=10)
+
+    def frame_4_inside_button1_event(self):
+        for child in self.home_frame.grid_slaves():
+            child.grid_forget()
+
+    def frame_5_inside_button1_event(self):
+        app.destroy()
+
+
+#
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+
+
+def save_to_csv():
+    path = 'New Data/ds2'
+    from glob import glob
+    all_xl = glob(path + '/**')
+    new_df = pd.DataFrame()
+    for i in range(len(all_xl)):
+        file = pd.read_csv(f'{all_xl[i]}/_classes.csv')
+        new_df = pd.concat([new_df, file], axis=0, ignore_index=True)
+    new_df.to_csv(f'New Data/_classes.csv')
